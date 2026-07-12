@@ -1,4 +1,5 @@
 import asyncio
+import html
 import json
 import os
 import re
@@ -17,10 +18,24 @@ DATE_RE = re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b")
 TIME_RE = re.compile(r"\b([01]?\d|2[0-3]):[0-5]\d\b")
 WEEK_RE = re.compile(r"^\s*Woche\s+\d+\s*$", re.IGNORECASE)
 
+WEEKDAYS_RU = [
+    "Понедельник", "Вторник", "Среда", "Четверг",
+    "Пятница", "Суббота", "Воскресенье",
+]
 
-def send_telegram(text: str) -> None:
+
+def plural_appointments(n: int) -> str:
+    if n % 10 == 1 and n % 100 != 11:
+        return "термин"
+    if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+        return "термина"
+    return "терминов"
+
+
+def send_telegram(text: str, disable_notification: bool = False) -> None:
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     chat_id = os.environ["TELEGRAM_CHAT_ID"]
+
     chunks = []
     while len(text) > 3900:
         split_at = text.rfind("\n", 0, 3900)
@@ -34,7 +49,13 @@ def send_telegram(text: str) -> None:
     for chunk in chunks:
         response = requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": chunk, "disable_web_page_preview": False},
+            json={
+                "chat_id": chat_id,
+                "text": chunk,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+                "disable_notification": disable_notification,
+            },
             timeout=30,
         )
         response.raise_for_status()
@@ -72,6 +93,7 @@ def extract_appointments(text: str) -> dict[date, set[str]]:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     found: dict[date, set[str]] = {}
     current_date: date | None = None
+
     for line in lines:
         date_match = DATE_RE.search(line)
         if date_match:
@@ -82,13 +104,18 @@ def extract_appointments(text: str) -> dict[date, set[str]]:
             except ValueError:
                 current_date = None
             continue
+
         if current_date:
             for time_match in TIME_RE.finditer(line):
                 found[current_date].add(time_match.group(0))
+
     return {d: times for d, times in found.items() if times}
 
 
-def merge_appointments(target: dict[date, set[str]], source: dict[date, set[str]]) -> None:
+def merge_appointments(
+    target: dict[date, set[str]],
+    source: dict[date, set[str]],
+) -> None:
     for day, times in source.items():
         target.setdefault(day, set()).update(times)
 
@@ -119,6 +146,7 @@ async def click_next_week(frame: Frame) -> bool:
     candidates = frame.locator("button, a")
     count = await candidates.count()
     matched = []
+
     for i in range(count):
         item = candidates.nth(i)
         try:
@@ -129,10 +157,13 @@ async def click_next_week(frame: Frame) -> bool:
                     matched.append((box["x"], i))
         except Exception:
             continue
+
     if not matched:
         return False
-    matched.sort(key=lambda x: x[0])
+
+    matched.sort(key=lambda item: item[0])
     _, index = matched[-1]
+
     try:
         await candidates.nth(index).click(timeout=10000)
         await frame.page.wait_for_timeout(2500)
@@ -141,16 +172,27 @@ async def click_next_week(frame: Frame) -> bool:
         return False
 
 
-def select_rolling_month(appointments: dict[date, set[str]]) -> dict[date, set[str]]:
+def select_rolling_month(
+    appointments: dict[date, set[str]],
+) -> dict[date, set[str]]:
     if not appointments:
         return {}
+
     first_day = min(appointments)
     end_day = first_day + relativedelta(months=1)
-    return {day: times for day, times in appointments.items() if first_day <= day <= end_day}
+
+    return {
+        day: times
+        for day, times in appointments.items()
+        if first_day <= day <= end_day
+    }
 
 
 def normalize(appointments: dict[date, set[str]]) -> dict[str, list[str]]:
-    return {day.isoformat(): sorted(times) for day, times in sorted(appointments.items())}
+    return {
+        day.isoformat(): sorted(times)
+        for day, times in sorted(appointments.items())
+    }
 
 
 def denormalize(data: dict[str, list[str]]) -> dict[date, set[str]]:
@@ -163,26 +205,138 @@ def denormalize(data: dict[str, list[str]]) -> dict[date, set[str]]:
     return result
 
 
+def date_title(day: date) -> str:
+    return f"{WEEKDAYS_RU[day.weekday()]}, {day.strftime('%d.%m.%Y')}"
+
+
+def format_day_card(day: date, times: set[str]) -> str:
+    ordered = sorted(times)
+    rows = []
+    for i in range(0, len(ordered), 4):
+        rows.append("   ".join(ordered[i:i + 4]))
+
+    return (
+        f"<b>📅 {html.escape(date_title(day))}</b>\n"
+        f"<code>{html.escape(chr(10).join(rows))}</code>"
+    )
+
+
 def format_summary(appointments: dict[date, set[str]]) -> str:
     if not appointments:
-        return "Свободных терминов сейчас не найдено."
+        return (
+            "<b>🏥 UROLOGIE MARL</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "Свободных терминов сейчас не найдено.\n\n"
+            f'🔗 <a href="{URL}">Открыть запись</a>'
+        )
+
     first_day = min(appointments)
     end_day = first_day + relativedelta(months=1)
+    total = sum(len(times) for times in appointments.values())
+
     lines = [
-        "📅 Актуальные свободные термины",
-        f"Период: {first_day.strftime('%d.%m.%Y')} – {end_day.strftime('%d.%m.%Y')}",
+        "<b>🏥 UROLOGIE MARL</b>",
+        "━━━━━━━━━━━━━━━━━━",
+        "<b>📆 Актуальные свободные дни</b>",
+        f"{first_day.strftime('%d.%m.%Y')} — {end_day.strftime('%d.%m.%Y')}",
         "",
     ]
+
     for day in sorted(appointments):
-        lines.append(f"• {day.strftime('%d.%m.%Y')}: {', '.join(sorted(appointments[day]))}")
-    lines.extend(["", URL])
+        count = len(appointments[day])
+        lines.append(
+            f"🟢 <b>{day.strftime('%d.%m.%Y')}</b>  ·  "
+            f"{count} {plural_appointments(count)}"
+        )
+
+    lines.extend([
+        "",
+        f"Всего: <b>{total}</b> {plural_appointments(total)}",
+        "",
+        f'🔗 <a href="{URL}">Открыть запись</a>',
+    ])
+    return "\n".join(lines)
+
+
+def format_changes(
+    gone_days: list[date],
+    new_days: list[date],
+    removed_times: dict[date, list[str]],
+    added_times: dict[date, list[str]],
+) -> str:
+    parts = [
+        "<b>🔔 ИЗМЕНЕНИЯ В КАЛЕНДАРЕ</b>",
+        "━━━━━━━━━━━━━━━━━━",
+    ]
+
+    for day in new_days:
+        parts.append(
+            f"\n<b>🆕 Новый свободный день</b>\n"
+            f"{format_day_card(day, set(added_times.get(day, [])))}"
+        )
+
+    for day in gone_days:
+        parts.append(
+            f"\n<b>❌ День полностью ушёл</b>\n"
+            f"📅 <b>{date_title(day)}</b>\n"
+            "Свободных терминов больше нет."
+        )
+
+    affected_days = sorted(set(removed_times) | set(added_times))
+    for day in affected_days:
+        parts.append(f"\n<b>🔄 {date_title(day)}</b>")
+
+        if added_times.get(day):
+            parts.append(
+                "➕ Добавилось: "
+                f"<code>{'  '.join(added_times[day])}</code>"
+            )
+
+        if removed_times.get(day):
+            parts.append(
+                "➖ Исчезло: "
+                f"<code>{'  '.join(removed_times[day])}</code>"
+            )
+
+    parts.extend(["", f'🔗 <a href="{URL}">Открыть запись</a>'])
+    return "\n".join(parts)
+
+
+def format_early_alert(new_early: list[tuple[date, str]]) -> str:
+    lines = [
+        "🚨🚨🚨",
+        "<b>НАЙДЕН РАННИЙ ТЕРМИН!</b>",
+        "━━━━━━━━━━━━━━━━━━",
+        "",
+    ]
+
+    grouped: dict[date, list[str]] = {}
+    for day, time_value in new_early:
+        grouped.setdefault(day, []).append(time_value)
+
+    for day in sorted(grouped):
+        lines.append(f"<b>📅 {date_title(day)}</b>")
+        lines.append(f"🕒 <code>{'  '.join(sorted(grouped[day]))}</code>")
+        lines.append("")
+
+    lines.extend([
+        "<b>Открывай сайт и бронируй как можно быстрее.</b>",
+        "",
+        f'👉 <a href="{URL}">ЗАПИСАТЬСЯ СЕЙЧАС</a>',
+        "",
+        "🚨🚨🚨",
+    ])
     return "\n".join(lines)
 
 
 async def main() -> None:
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page(locale="de-DE", viewport={"width": 1440, "height": 2200})
+        page = await browser.new_page(
+            locale="de-DE",
+            viewport={"width": 1440, "height": 2200},
+        )
+
         await page.goto(URL, wait_until="domcontentloaded", timeout=90000)
         await page.wait_for_timeout(10000)
 
@@ -190,12 +344,17 @@ async def main() -> None:
         all_found: dict[date, set[str]] = {}
 
         for _ in range(20):
-            merge_appointments(all_found, await collect_all_visible_appointments(page))
+            merge_appointments(
+                all_found,
+                await collect_all_visible_appointments(page),
+            )
+
             if all_found:
                 first_day = min(all_found)
                 target_end = first_day + relativedelta(months=1)
                 if max(all_found) >= target_end:
                     break
+
             if not await click_next_week(calendar_frame):
                 break
 
@@ -204,12 +363,14 @@ async def main() -> None:
 
     current = select_rolling_month(all_found)
     current_normalized = normalize(current)
+
     state = load_state()
     previous = denormalize(state["appointments"])
     initialized = state["initialized"]
 
     current_days = set(current)
     previous_days = set(previous)
+
     gone_days = sorted(previous_days - current_days)
     new_days = sorted(current_days - previous_days)
 
@@ -224,40 +385,47 @@ async def main() -> None:
         if current[day] - previous.get(day, set())
     }
 
+    # Для нового дня показываем все его времена.
+    for day in new_days:
+        added_times[day] = sorted(current[day])
+
     changed = current_normalized != state["appointments"]
 
-    if not initialized:
-        send_telegram("✅ Монитор терминов запущен.\n\n" + format_summary(current))
-    elif changed:
-        notices = []
-        for day in gone_days:
-            notices.append(f"❌ День ушёл: {day.strftime('%d.%m.%Y')} — свободных терминов на этот день больше нет.")
-        for day, times in removed_times.items():
-            notices.append(f"⏳ Термин исчез: {day.strftime('%d.%m.%Y')} — {', '.join(times)}")
-        for day in new_days:
-            notices.append(f"🆕 Появился новый день: {day.strftime('%d.%m.%Y')} — {', '.join(sorted(current[day]))}")
-        for day, times in added_times.items():
-            notices.append(f"🆕 Появился термин: {day.strftime('%d.%m.%Y')} — {', '.join(times)}")
-        message = "\n".join(notices)
-        if message:
-            message += "\n\n"
-        message += format_summary(current)
-        send_telegram(message)
+    early_now = {
+        day: times for day, times in current.items() if day < EARLY_CUTOFF
+    }
+    early_before = {
+        day: times for day, times in previous.items() if day < EARLY_CUTOFF
+    }
 
-    early_now = {day: times for day, times in current.items() if day < EARLY_CUTOFF}
-    early_before = {day: times for day, times in previous.items() if day < EARLY_CUTOFF}
     new_early = []
     for day, times in early_now.items():
         for time_value in sorted(times - early_before.get(day, set())):
             new_early.append((day, time_value))
 
-    if initialized and new_early:
-        lines = ["🚨 СРОЧНО: появился термин раньше 01.08.2026!", ""]
-        lines.extend(f"• {day.strftime('%d.%m.%Y')} в {time_value}" for day, time_value in new_early)
-        lines.extend(["", URL])
-        send_telegram("\n".join(lines))
+    if not initialized:
+        send_telegram(
+            "<b>✅ Монитор запущен</b>\n\n" + format_summary(current)
+        )
+    else:
+        if new_early:
+            # Срочное уведомление — со звуком.
+            send_telegram(format_early_alert(new_early), disable_notification=False)
+
+        if changed:
+            # Обычные изменения — одно компактное сообщение.
+            send_telegram(
+                format_changes(
+                    gone_days=gone_days,
+                    new_days=new_days,
+                    removed_times=removed_times,
+                    added_times=added_times,
+                ),
+                disable_notification=True,
+            )
 
     save_state(current_normalized)
+
     print("Актуальные термины:", current_normalized)
     print("Исчезнувшие дни:", [d.isoformat() for d in gone_days])
 
