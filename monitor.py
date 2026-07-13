@@ -329,6 +329,43 @@ def format_early_alert(new_early: list[tuple[date, str]]) -> str:
     return "\n".join(lines)
 
 
+async def collect_all_appointment_types(page: Page, frame: Frame) -> dict[date, set[str]]:
+    """Collect visible appointments for every option in every appointment-type dropdown."""
+    combined: dict[date, set[str]] = {}
+    merge_appointments(combined, await collect_all_visible_appointments(page))
+
+    selects = frame.locator("select")
+    for select_index in range(await selects.count()):
+        select = selects.nth(select_index)
+        options = select.locator("option")
+        values: list[str] = []
+        for option_index in range(await options.count()):
+            option = options.nth(option_index)
+            value = await option.get_attribute("value")
+            if value:
+                values.append(value)
+
+        for value in values:
+            try:
+                await select.select_option(value=value)
+                await page.wait_for_timeout(3500)
+                merge_appointments(combined, await collect_all_visible_appointments(page))
+
+                # Some appointment types expose a compact "next available" list.
+                link = frame.get_by_text(re.compile(r"Die nächsten\\s+\\d+\\s+verfügbaren Termine", re.I))
+                if await link.count() > 0:
+                    try:
+                        await link.first.click(timeout=5000)
+                        await page.wait_for_timeout(2500)
+                        merge_appointments(combined, await collect_all_visible_appointments(page))
+                    except Exception:
+                        pass
+            except Exception:
+                continue
+
+    return combined
+
+
 async def main() -> None:
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -341,7 +378,7 @@ async def main() -> None:
         await page.wait_for_timeout(10000)
 
         calendar_frame = await find_calendar_frame(page)
-        all_found: dict[date, set[str]] = {}
+        all_found = await collect_all_appointment_types(page, calendar_frame)
 
         for _ in range(20):
             merge_appointments(
@@ -360,6 +397,18 @@ async def main() -> None:
 
         await page.screenshot(path="last_check.png", full_page=True)
         await browser.close()
+
+    state = load_state()
+
+    # Never treat a failed/empty parse as "all appointments disappeared".
+    if not all_found:
+        send_telegram(
+            "<b>⚠️ Не удалось прочитать календарь</b>\n\n"
+            "Сайт мог временно не загрузиться. Предыдущие данные сохранены; "
+            "ложное сообщение об исчезновении всех дней не отправлено.",
+            disable_notification=True,
+        )
+        raise RuntimeError("No appointments parsed; state not overwritten")
 
     current = select_rolling_month(all_found)
     current_normalized = normalize(current)
@@ -389,10 +438,22 @@ async def main() -> None:
     for day in new_days:
         added_times[day] = sorted(current[day])
 
+    # If almost every prior day vanishes at once and no replacement appears,
+    # assume a partial page load rather than real availability changes.
+    if previous_days and len(gone_days) >= max(3, int(len(previous_days) * 0.7)) and not new_days:
+        send_telegram(
+            "<b>⚠️ Подозрительный результат проверки</b>\n\n"
+            "Парсер увидел массовое исчезновение дат. Состояние не изменено, "
+            "чтобы не присылать ложные уведомления.",
+            disable_notification=True,
+        )
+        raise RuntimeError("Suspicious mass disappearance; state not overwritten")
+
     changed = current_normalized != state["appointments"]
 
+    # Early alert must use every parsed date, not only the one-month summary window.
     early_now = {
-        day: times for day, times in current.items() if day < EARLY_CUTOFF
+        day: times for day, times in all_found.items() if day < EARLY_CUTOFF
     }
     early_before = {
         day: times for day, times in previous.items() if day < EARLY_CUTOFF
@@ -403,15 +464,15 @@ async def main() -> None:
         for time_value in sorted(times - early_before.get(day, set())):
             new_early.append((day, time_value))
 
+    # Send an early alert even on the very first run/reset.
+    if new_early:
+        send_telegram(format_early_alert(new_early), disable_notification=False)
+
     if not initialized:
         send_telegram(
             "<b>✅ Монитор запущен</b>\n\n" + format_summary(current)
         )
     else:
-        if new_early:
-            # Срочное уведомление — со звуком.
-            send_telegram(format_early_alert(new_early), disable_notification=False)
-
         if changed:
             # Обычные изменения — одно компактное сообщение.
             send_telegram(
