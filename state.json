@@ -1,4 +1,6 @@
 {
   "initialized": false,
-  "appointments": {}
+  "appointments": {},
+  "failure_count": 0,
+  "last_error_notice_at": 0
 }
