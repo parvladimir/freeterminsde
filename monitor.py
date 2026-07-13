@@ -14,6 +14,8 @@ import requests
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from urllib3.exceptions import InsecureRequestWarning
+import urllib3
 
 PRACTICE_URL = "https://www.uro-logisch.de/marl/onlineterminvereinbarung"
 DOCVISIT_LIST_URL = "https://www.docvisit.de/kalender/marl/list"
@@ -24,6 +26,8 @@ DEBUG_HTML = Path("last_response.html")
 
 DATE_RE = re.compile(r"\b([0-3]?\d)\.([01]?\d)\.(20\d{2})\b")
 TIME_RE = re.compile(r"\b([01]?\d|2[0-3]):([0-5]\d)\b")
+urllib3.disable_warnings(InsecureRequestWarning)
+
 WEEKDAYS_RU = (
     "Понедельник", "Вторник", "Среда", "Четверг",
     "Пятница", "Суббота", "Воскресенье",
@@ -109,7 +113,7 @@ def save_state(state: dict) -> None:
 def discover_types(s: requests.Session) -> dict[str, str]:
     """Находит реальные type ID и названия приёмов прямо на странице DocVisit."""
     found: dict[str, str] = {}
-    r = s.get(DOCVISIT_LIST_URL, timeout=35)
+    r = s.get(DOCVISIT_LIST_URL, timeout=35, verify=False)
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
 
@@ -169,6 +173,7 @@ def fetch_snapshot() -> tuple[dict[date, set[str]], dict[str, str], str]:
                 DOCVISIT_LIST_URL,
                 params={"type": type_id, "_": int(time.time())},
                 timeout=35,
+                verify=False,
             )
             r.raise_for_status()
             parsed = parse_appointments(r.text)
