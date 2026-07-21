@@ -1,9 +1,6 @@
 {
   "initialized": true,
   "appointments": {
-    "2026-09-10": [
-      "10:45"
-    ],
     "2026-09-11": [
       "08:15",
       "08:30",
@@ -235,5 +232,5 @@
   "successful_types": {
     "2866438": "Termin Herr Dr-medic Kamal"
   },
-  "checked_at": "2026-07-21T21:50:58"
+  "checked_at": "2026-07-21T22:42:00"
 }
