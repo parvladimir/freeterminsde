@@ -1,9 +1,6 @@
 {
   "initialized": true,
   "appointments": {
-    "2026-08-13": [
-      "09:00"
-    ],
     "2026-09-21": [
       "09:00",
       "09:30",
@@ -211,8 +208,7 @@
   "failure_count": 0,
   "last_error_notice_at": 0,
   "successful_types": {
-    "2866438": "Termin Herr Dr-medic Kamal",
-    "1577997": "Termin Herr Dr. Schewe"
+    "2866438": "Termin Herr Dr-medic Kamal"
   },
-  "checked_at": "2026-08-12T05:15:42"
+  "checked_at": "2026-08-12T06:46:17"
 }
