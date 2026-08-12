@@ -1,9 +1,6 @@
 {
   "initialized": true,
   "appointments": {
-    "2026-08-17": [
-      "11:45"
-    ],
     "2026-09-21": [
       "09:00",
       "14:45",
@@ -212,5 +209,5 @@
     "2866438": "Termin Herr Dr-medic Kamal",
     "1577997": "Termin Herr Dr. Schewe"
   },
-  "checked_at": "2026-08-12T18:35:55"
+  "checked_at": "2026-08-12T19:44:54"
 }
