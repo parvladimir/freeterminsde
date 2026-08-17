@@ -2,8 +2,6 @@ name: Check Urologie Marl appointments
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "*/5 * * * *"
 
 permissions:
   contents: write
